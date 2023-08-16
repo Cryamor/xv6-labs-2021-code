@@ -484,3 +484,136 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length, prot, flags, fd, offset;
+  struct file *file;
+  uint64 err = 0xffffffffffffffff;
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0
+    || argint(2, &prot) < 0 || argint(3, &flags) < 0
+    || argfd(4, &fd, &file) < 0 || argint(5, &offset) < 0)
+    return err;
+  // 本实验假定addr和offset为0
+  if(addr != 0 || offset != 0 || length < 0)
+    return err;
+  // 若文件不可写，则不允许有写权限时映射为共享
+  if((!file->writable) && (prot & PROT_WRITE) && (flags == MAP_SHARED))
+    return err;
+
+  struct proc *p = myproc();
+  // 没有足够的虚拟地址空间
+  if(p->sz + length > MAXVA)
+    return err;
+  
+  for(int i = 0; i < NVMA; i++){
+    if(!p->vma[i].used){ // VMA未被使用
+      p->vma[i].used = 1;
+      p->vma[i].addr = p->sz;
+      p->vma[i].length = length;
+      p->vma[i].prot = prot;
+      p->vma[i].flags = flags;
+      p->vma[i].file = file;
+      p->vma[i].fd = fd;
+      p->vma[i].offset = offset;
+      filedup(file); // 增加引用计数
+      p->sz += length;
+      return p->vma[i].addr;
+    }
+  }
+
+  return err;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+    return -1;
+
+  struct proc *p = myproc();
+  int i;
+  for(i = 0; i < NVMA; i++){
+    if(p->vma[i].used && p->vma[i].length >= length){
+      if(p->vma[i].addr == addr){ // 起始位置
+        p->vma[i].addr += length;
+        p->vma[i].length -= length;
+        break;
+      }
+      if(p->vma[i].addr + p->vma[i].length == addr + length){ // 末尾
+        p->vma[i].length -= length;
+        break;
+      }
+    }
+  }
+  if(i == NVMA) return -1;
+
+  // 将MAP_SHARED页面写回
+  if(p->vma[i].flags == MAP_SHARED && (p->vma[i].prot & PROT_WRITE) != 0){
+    filewrite(p->vma[i].file, addr, length);
+  }
+  uvmunmap(p->pagetable, addr, length / PGSIZE, 1);
+  // 当前VMA中页面映射全部被取消
+  if(p->vma[i].length == 0){
+    fileclose(p->vma[i].file);
+    p->vma[i].used = 0;
+  }
+
+  return 0;
+}
+
+// 处理mmap惰性分配导致的页面错误
+int mmap_handler(uint64 addr)
+{
+  struct proc *p = myproc();
+  // 寻找属于哪一个VMA
+  int i;
+  for(i = 0; i< NVMA; i++){
+    if(p->vma[i].used && p->vma[i].addr <= addr 
+      && addr <= p->vma[i].addr + p->vma[i].length -1)
+      break;
+  }
+  if(i == NVMA) return -1;
+
+  struct mmap_vma *cur_vma = p->vma + i;
+
+  if(r_scause() == 13 && (!cur_vma->file->readable) && (cur_vma->flags & MAP_SHARED)){
+    printf("mmap_handler:not readable\n");
+    return -1;
+  }
+  if(r_scause() == 15 && (!cur_vma->file->writable) && (cur_vma->flags & MAP_SHARED)){
+    printf("mmap_handler:not writable\n");
+    return -1;
+  }
+
+  void *pa = kalloc();
+  if(pa == 0) return -1;
+  memset(pa, 0, PGSIZE);
+
+  // 读取文件
+  ilock(cur_vma->file->ip);
+  int offset = cur_vma->offset + PGROUNDDOWN(addr - cur_vma->addr);
+  if(readi(cur_vma->file->ip, 0, (uint64)pa, offset, PGSIZE) == 0){
+    iunlock(cur_vma->file->ip);
+    kfree(pa);
+    return -1;
+  }
+  iunlock(cur_vma->file->ip);
+
+  int pte_flags = PTE_U;
+  if(cur_vma->prot & PROT_READ) pte_flags |= PTE_R;
+  if(cur_vma->prot & PROT_WRITE) pte_flags |= PTE_W;
+  if(cur_vma->prot & PROT_EXEC) pte_flags |= PTE_X;
+  // 添加页面映射
+  if(mappages(p->pagetable, PGROUNDDOWN(addr),
+    PGSIZE, (uint64)pa, pte_flags) != 0){
+    kfree(pa);
+    return -1;
+  }
+
+  return 0;
+}
