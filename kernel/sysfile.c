@@ -316,6 +316,33 @@ sys_open(void)
     }
   }
 
+  // 处理符号链接
+  if(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)){
+    int MAX_DEPTH = 10;
+    for(int i = 0; i < MAX_DEPTH; i++){
+      if(readi(ip, 0, (uint64)path, 0, strlen(path)) != strlen(path)){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      iunlockput(ip);
+      ip = namei(path);
+      if(ip == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if(ip->type != T_SYMLINK)
+        break;
+    }
+    // 超出最大深度
+    if(ip->type == T_SYMLINK){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
     end_op();
@@ -482,5 +509,30 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64 
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+  
+  begin_op();
+  // 创建一个文件
+  struct inode *ip = create(path, T_SYMLINK, 0, 0);
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+  // 向文件中写入target路径
+  if(writei(ip, 0, (uint64)target, 0, strlen(target)) < strlen(target)){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
   return 0;
 }
