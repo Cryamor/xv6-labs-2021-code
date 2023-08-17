@@ -81,6 +81,30 @@ int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
+  uint64 start_addr;  // 要检查的第一个用户页的起始虚拟地址
+  int num_pages;      // 要检查的页数
+  uint64 user_addr;   // 用户态地址，用于存储结果到位掩码
+  uint64 bitmask = 0; // 存储结果的位掩码
+
+  argaddr(0, &start_addr);
+  argint(1, &num_pages);
+  argaddr(2, &user_addr);
+
+  struct proc *p = myproc();
+  for(int i = 0; i < num_pages; i++){
+    // 计算当前虚拟地址对应的页表项的地址
+    pte_t *pte = walk(p->pagetable, start_addr + PGSIZE * i, 0);
+    if(pte != 0 && (*pte & PTE_A)){
+      // 如果该虚拟页面的PTE存在且访问位被设置为1
+      // 将位掩码的第i位设置为1
+      bitmask |= (1UL << i);
+      // 清除该PTE的访问位
+      *pte &= ~PTE_A;
+    }
+  }
+
+  // 存储到bitmask完成后将其复制到用户空间
+  copyout(p->pagetable, user_addr, (char *)&bitmask, sizeof(bitmask)); 
   return 0;
 }
 #endif

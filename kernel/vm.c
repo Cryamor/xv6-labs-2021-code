@@ -281,6 +281,33 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+// 递归打印页表内容，depth为页表层级
+void
+vmprint_recursive(pagetable_t pagetable, int depth)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    // 页表项可用且不在最后一层时，递归调用
+    if(pte & PTE_V){
+      for (int j = 0; j < depth; j++){
+        if (j) printf(" "); // 第一层打印开头无空格
+        printf("..");
+      }
+      uint64 child = PTE2PA(pte);
+      printf("%d: pte %p pa %p\n", i, pte, child);
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0)
+        vmprint_recursive((pagetable_t)child, depth+1);
+    }
+  }
+}
+
+void 
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_recursive(pagetable, 1);
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void
