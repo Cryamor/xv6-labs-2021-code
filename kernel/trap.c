@@ -77,8 +77,16 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){ // 时钟中断编号为2
+    if(++p->alarm_ticks >= p->alarm_interval && !p->alarm_lock){
+      // 到达规定时间时，直接修改epc
+      *p->alarm_trapframe = *p->trapframe; // 备份trapframe
+      p->trapframe->epc = (uint64)p->alarm_handler;
+      p->alarm_ticks = 0; // 将计数器清零
+      p->alarm_lock = 1;  // handler正在执行
+    }
     yield();
+  }
 
   usertrapret();
 }
