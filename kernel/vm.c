@@ -303,7 +303,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  //char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -312,13 +312,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+
+    if(flags & PTE_W){
+      flags &= (~PTE_W); // 禁用写
+      flags |= PTE_C;    // 设置COW
+    }
+    *pte = flags | PA2PTE(pa);
+    // 删除原来实际分配内存的部分，并将虚拟地址i的映射从新物理地址mem改为父物理地址pa
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      //kfree(mem);
+      printf("uvmcopy failed!");
       goto err;
     }
+    add_refcount((char *)pa); // 增加引用计数器
   }
   return 0;
 
@@ -350,6 +356,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if(is_cow(pagetable, va0))
+      if(alloc_cow(pagetable, va0) < 0) return -1;
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
@@ -432,3 +440,43 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+// 判断一个页面是否为COW
+int
+is_cow(pagetable_t pagetable, uint64 va)
+{
+  if(va >= MAXVA) return 0;
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte == 0)  return 0;
+  if((*pte & PTE_V) == 0) return 0;
+  if((*pte & PTE_U) == 0) return 0;
+  return (*pte & PTE_C ? 1 : 0);
+}
+// 为COW页分配物理内存
+int
+alloc_cow(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  if((pte = walk(pagetable, va, 0)) == 0) return -1;
+  uint64 flags = PTE_FLAGS(*pte);
+  uint64 pa = PTE2PA(*pte);
+
+  char *new_page;
+  if((new_page = kalloc()) == 0) return -1; // 申请内存
+  uint64 new_va = PGROUNDDOWN(va); 
+
+  flags &= (~PTE_C); // 新页面不设置COW
+  flags |= PTE_W;    // 新页面设置可写
+
+  // 将父进程内容复制到子进程
+  memmove(new_page, (char *)pa, PGSIZE);
+  // 设置新的映射
+  uvmunmap(pagetable, new_va, 1, 1);
+  if(mappages(pagetable, new_va, PGSIZE, (uint64)new_page, flags) < 0){
+    kfree(new_page);
+    return -1;
+  }
+
+  return 0;
+}
+
