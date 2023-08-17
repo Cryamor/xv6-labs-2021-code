@@ -10,6 +10,7 @@
 #include "defs.h"
 
 void freerange(void *pa_start, void *pa_end);
+void freebytes(uint64 *size);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -22,6 +23,19 @@ struct {
   struct spinlock lock;
   struct run *freelist;
 } kmem;
+
+void
+freebytes(uint64 *size)
+{
+  *size = 0;
+  struct run *p = kmem.freelist; // 指针p用于遍历内存链表
+  acquire(&kmem.lock);
+  while(p){
+    *size += PGSIZE;
+    p = p->next;
+  }
+  release(&kmem.lock);
+}
 
 void
 kinit()

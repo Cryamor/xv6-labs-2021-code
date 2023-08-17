@@ -289,6 +289,9 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // copy trace mask 
+  np->mask = p->mask;
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -652,5 +655,17 @@ procdump(void)
       state = "???";
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
+  }
+}
+
+// 获取进程数
+void
+proc_num(uint64* num)
+{
+  *num = 0;
+  struct proc *p; // 遍历进程表
+  for (p = proc; p < &proc[NPROC]; p++) { 
+    if (p->state != UNUSED)
+      ++*num;
   }
 }
